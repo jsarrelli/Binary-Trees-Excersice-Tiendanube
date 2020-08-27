@@ -92,11 +92,8 @@ class BinaryTreeSet extends Actor {
     case CopyFinished =>
       root = newRoot
       context.become(normal)
-      Future {
-        pendingQueue.foreach(newRoot ! _)
-        pendingQueue = Queue.empty[Operation]
-      }
-
+      pendingQueue.foreach(newRoot ! _)
+      pendingQueue = Queue.empty[Operation]
   }
 
 }
@@ -139,27 +136,37 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
     case x: Contains => handleContains(x)
     case x: Remove => handleRemove(x)
     case CopyTo(treeNode) =>
-      if (!removed) treeNode ! Insert(self, elem, elem)
-      subtrees.values.foreach(_ ! CopyTo(treeNode))
-      context.become(copying(subtrees.values.toSet, insertConfirmed = removed))
+      if (subtrees.isEmpty && removed) endCopy
+      else {
+        context.become(copying(treeNode))
+        subtrees.values.foreach(_ ! CopyTo(treeNode))
+      }
   }
 
   // optional
   /** `expected` is the set of ActorRefs whose replies we are waiting for,
     * `insertConfirmed` tracks whether the copy of this node to the new tree has been confirmed.
     */
-  def copying(expected: Set[ActorRef], insertConfirmed: Boolean): Receive = {
-    case CopyFinished if insertConfirmed && expected.dropWhile(_ == sender).isEmpty =>
-      context.parent ! CopyFinished
-      context stop sender
+  def copying(treeNode: ActorRef): Receive = {
     case CopyFinished =>
-      context.become(copying(expected.dropWhile(_ == sender), insertConfirmed))
-      context stop sender
-    case OperationFinished(`elem`) =>
-      context.become(copying(expected, insertConfirmed = true))
-      if (expected.isEmpty) context.parent ! CopyFinished
+      val copiedChild = sender
+      deleteChild(copiedChild)
+      if (subtrees.isEmpty) {
+        if (!removed)
+          treeNode ! Insert(self, elem, elem)
+        else
+          endCopy
+      }
+    case OperationFinished(`elem`) => endCopy
   }
 
+  private def deleteChild(actorRef: ActorRef) =
+    subtrees = subtrees.dropWhile { case (_, value) => value == actorRef }
+
+  private def endCopy = {
+    context.parent ! CopyFinished
+    context.stop(self)
+  }
 
   private def handleInsert(insert: Insert): Unit = insert.elem match {
     case `elem` if !removed => insert.requester ! OperationFinished(insert.id)
