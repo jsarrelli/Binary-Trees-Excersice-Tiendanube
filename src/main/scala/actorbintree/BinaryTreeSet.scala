@@ -3,14 +3,11 @@
   */
 package actorbintree
 
-import actorbintree.BinaryTreeNode.Position
-import akka.actor.TypedActor.context
 import akka.actor._
-import akka.event.{Logging, LoggingReceive}
+import akka.event.LoggingReceive
 
-import scala.collection.immutable.{AbstractSet, Queue, SortedSet}
-import scala.concurrent.ExecutionContext.Implicits.global
-import scala.concurrent.Future
+import scala.annotation.tailrec
+import scala.collection.mutable.Queue
 
 object BinaryTreeSet {
 
@@ -60,8 +57,8 @@ object BinaryTreeSet {
 
 class BinaryTreeSet extends Actor with akka.actor.ActorLogging {
 
-  import BinaryTreeSet._
   import BinaryTreeNode._
+  import BinaryTreeSet._
 
   def createRoot: ActorRef = context.actorOf(BinaryTreeNode.props(0, initiallyRemoved = true))
 
@@ -77,13 +74,11 @@ class BinaryTreeSet extends Actor with akka.actor.ActorLogging {
   /** Accepts `Operation` and `GC` messages. */
   val normal: Receive = LoggingReceive {
     case GC =>
-      println("GC")
       val newRoot = createRoot
       context become garbageCollecting(newRoot)
       root ! CopyTo(newRoot)
-    case x: Operation =>
-      println(x.id)
-      root ! x
+    case op: Operation =>
+      root ! op
   }
 
   // optional
@@ -92,19 +87,18 @@ class BinaryTreeSet extends Actor with akka.actor.ActorLogging {
     * all non-removed elements into.
     */
   def garbageCollecting(newRoot: ActorRef): Receive = LoggingReceive {
-    case x: Operation => pendingQueue = pendingQueue enqueue x
+    case x: Operation => pendingQueue += x
     case CopyFinished =>
       root = newRoot
-      context.become(normal)
-      println(s"cayeron ${pendingQueue.size}")
       processPendingQueue()
+      context.become(normal)
   }
 
-  private def processPendingQueue(queue: Queue[Operation] = pendingQueue): Unit = queue.dequeueOption match {
-    case Some((x, xs)) =>
-      self ! x
-      processPendingQueue(xs)
-    case None => pendingQueue = Queue.empty
+  @tailrec
+  private def processPendingQueue(): Unit = {
+    val op = pendingQueue.dequeue()
+    root ! op
+    if (pendingQueue.nonEmpty) processPendingQueue()
   }
 
 }
@@ -149,7 +143,7 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor wit
     case CopyTo(_) if removed && subtrees.isEmpty => endCopy()
     case CopyTo(treeNode) =>
       context.become(copying(subtrees.values.toSet, removed))
-      treeNode ! Insert(self, elem, elem)
+      if (!removed) treeNode ! Insert(self, elem, elem)
       subtrees.values.foreach(_ ! CopyTo(treeNode))
   }
 
@@ -166,7 +160,7 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor wit
 
   private def endCopy(): Unit = {
     context.parent ! CopyFinished
-    context.stop(self)
+    self ! PoisonPill
   }
 
   private def handleInsert(insert: Insert): Unit = insert.elem match {
