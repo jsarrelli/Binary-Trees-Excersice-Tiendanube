@@ -70,6 +70,8 @@ class BinaryTreeSet extends Actor with akka.actor.ActorLogging {
   // optional
   def receive = normal
 
+  var isTreeEmpty = true
+
   // optional
   /** Accepts `Operation` and `GC` messages. */
   val normal: Receive = LoggingReceive {
@@ -77,8 +79,18 @@ class BinaryTreeSet extends Actor with akka.actor.ActorLogging {
       val newRoot = createRoot
       context become garbageCollecting(newRoot)
       root ! CopyTo(newRoot)
+    case op: Insert if isTreeEmpty =>
+      insertRoot(op)
     case op: Operation =>
       root ! op
+  }
+
+  private def insertRoot(insert: Insert) = {
+    context.stop(root)
+    root = context.actorOf(BinaryTreeNode.props(insert.elem, initiallyRemoved = false))
+    isTreeEmpty = false
+    insert.requester ! OperationFinished(insert.id)
+
   }
 
   // optional
